@@ -1,0 +1,416 @@
+"""
+=============================================================================
+ FLASK BACKEND — SILVER AI TRADING TERMINAL
+=============================================================================
+ Author  : Auto-generated for Advanced AI Time-Series Forecasting
+ Purpose : Serves plain HTML dashboard, runs multi-step deep learning forecasts,
+           features a Kurdish news sentiment advisor API (OpenRouter + Tavily),
+           persists chat logs, and hosts a Telegram monitoring alert thread.
+=============================================================================
+"""
+
+import os
+import sys
+import json
+import time
+import pickle
+import warnings
+import threading
+import requests
+from datetime import datetime, date, timedelta
+
+import numpy as np
+import pandas as pd
+from dotenv import load_dotenv
+from flask import Flask, jsonify, render_template, request
+
+import torch
+import torch.nn as nn
+
+# Force UTF-8 stdout
+if hasattr(sys.stdout, "reconfigure"):
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+warnings.filterwarnings("ignore")
+
+# Load environment variables
+load_dotenv()
+
+from openai import OpenAI
+from tavily import TavilyClient
+
+app = Flask(__name__)
+
+# Ensure Flask json encoder returns raw UTF-8 string for Kurdish characters
+app.json.ensure_ascii = False
+
+# Import model structures and pipelining
+from silver_data_pipeline import fetch_historical_data, clean_and_engineer
+from news_sentiment_pipeline import fetch_all_news, aggregate_daily_sentiment
+from pytorch_multimodal_model import SilverPredictor
+
+
+# ---------------------------------------------------------------------------
+# INITIALIZATION & MODEL CACHING
+# ---------------------------------------------------------------------------
+
+MODEL_PATH = "silver_multimodal_predictor.pth"
+SCALERS_PATH = "silver_scalers.pkl"
+CHAT_HISTORY_FILE = "chat_history.json"
+
+_cached_model = None
+_cached_device = None
+
+def get_model_and_device(ts_input_dim):
+    global _cached_model, _cached_device
+    if _cached_model is None:
+        _cached_device = "cuda" if torch.cuda.is_available() else "cpu"
+        model = SilverPredictor(
+            ts_input_dim=ts_input_dim,
+            lstm_hidden_dim=64,
+            lstm_layers=2,
+            sentiment_dim=1,
+            sentiment_hidden_dim=16,
+            fc_hidden_dim=32,
+            dropout=0.2
+        )
+        if os.path.exists(MODEL_PATH):
+            model.load_state_dict(torch.load(MODEL_PATH, map_location=_cached_device))
+        model.to(_cached_device)
+        model.eval()
+        _cached_model = model
+    return _cached_model, _cached_device
+
+
+# ---------------------------------------------------------------------------
+# CHAT PERSISTENCE HELPERS
+# ---------------------------------------------------------------------------
+
+def load_chat_history():
+    if os.path.exists(CHAT_HISTORY_FILE):
+        try:
+            with open(CHAT_HISTORY_FILE, "r", encoding="utf-8") as f:
+                return json.load(f)
+        except Exception as e:
+            print(f"[CHAT] Error loading chat history: {e}")
+    return []
+
+def save_chat_history(history):
+    try:
+        with open(CHAT_HISTORY_FILE, "w", encoding="utf-8") as f:
+            json.dump(history, f, ensure_ascii=False, indent=4)
+    except Exception as e:
+        print(f"[CHAT] Error saving chat history: {e}")
+
+
+# ---------------------------------------------------------------------------
+# TELEGRAM MONITOR ALERT BACKGROUND THREAD
+# ---------------------------------------------------------------------------
+
+def telegram_monitor_thread():
+    """
+    Background worker thread that monitors the silver market and sends Telegram alerts.
+    """
+    bot_token = os.getenv("TELEGRAM_BOT_TOKEN")
+    chat_id = os.getenv("TELEGRAM_CHAT_ID")
+    
+    if not bot_token or not chat_id or "YOUR_TELEGRAM" in bot_token or "YOUR_TELEGRAM" in chat_id:
+        print("[TELEGRAM] Telegram Bot Token or Chat ID not configured in .env. Background alerts thread is on STANDBY.")
+        return
+        
+    print(f"[TELEGRAM] Starting background monitor thread. Alerts will be sent to Chat ID: {chat_id}")
+    last_sent_alert_date = None
+    
+    while True:
+        try:
+            # Check market conditions and send an alert once a day
+            today_date = date.today().strftime("%Y-%m-%d")
+            
+            if last_sent_alert_date != today_date:
+                print("[TELEGRAM] Running automated daily forecast evaluation...")
+                forecast = calculate_multistep_forecast(horizon=1)
+                latest_close = forecast["latest_close"]
+                predicted_troy_oz = forecast["predicted_troy_oz"]
+                pct_change = forecast["pct_change"]
+                sentiment = forecast["sentiment_score"]
+                
+                # Format Kurdish Telegram message
+                direction = "📈 بەرزبوونەوە" if pct_change >= 0 else "📉 دابەزین"
+                color_emoji = "🟢" if pct_change >= 0 else "🔴"
+                
+                message = (
+                    f"🔔 *ئاگادارکردنەوەی ڕۆژانەی بازاڕی زیو*\n\n"
+                    f"📊 *نرخی ئێستا:* ${latest_close:.4f} / Troy Oz\n"
+                    f"🔮 *پێشبینی سبەی (AI):* ${predicted_troy_oz:.4f} / Troy Oz\n"
+                    f"📈 *ڕێژەی گۆڕانکاری پێشبینیکراو:* {color_emoji} {pct_change:+.2f}%\n"
+                    f"💭 *هەستی بازاڕ (FinBERT):* {sentiment:+.4f}\n\n"
+                    f"🏪 *ڕاوێژکاری زیوی سلێمانی (قەیسەری)*"
+                )
+                
+                url = f"https://api.telegram.org/bot{bot_token}/sendMessage"
+                payload = {
+                    "chat_id": chat_id,
+                    "text": message,
+                    "parse_mode": "Markdown"
+                }
+                res = requests.post(url, json=payload, timeout=15)
+                
+                if res.status_code == 200:
+                    print(f"[TELEGRAM] Daily market alert sent successfully.")
+                    last_sent_alert_date = today_date
+                else:
+                    print(f"[TELEGRAM] Failed to send Telegram alert: {res.text}")
+                    
+        except Exception as e:
+            print(f"[TELEGRAM] Error in background monitor thread: {e}")
+            
+        # Sleep for 1 hour before evaluating again
+        time.sleep(3600)
+
+
+# ---------------------------------------------------------------------------
+# FORECAST ROUTINES
+# ---------------------------------------------------------------------------
+
+def calculate_multistep_forecast(horizon=1, seq_len=20):
+    """
+    Fetches live data, runs multi-step auto-regressive prediction, 
+    and packages data into standard serializable structures.
+    """
+    if not os.path.exists(SCALERS_PATH) or not os.path.exists(MODEL_PATH):
+        raise FileNotFoundError("Model or scaler resources are missing.")
+
+    # 1. Load Scalers
+    with open(SCALERS_PATH, "rb") as f:
+        scalers = pickle.load(f)
+
+    # 2. Fetch recent daily market data
+    today_str = date.today().strftime("%Y-%m-%d")
+    raw_history = fetch_historical_data(start="2026-02-01", end=today_str)
+    cleaned_history = clean_and_engineer(raw_history)
+
+    exclude_cols = [
+        "sentiment_score", "sentiment_discrete", "headline_count",
+        "positive_ratio", "negative_ratio", "neutral_ratio", "sentiment_std"
+    ]
+    ts_cols = [col for col in cleaned_history.columns if col not in exclude_cols]
+
+    # Get recent sequence slice
+    recent_ts = cleaned_history[ts_cols].tail(seq_len)
+    latest_close = float(cleaned_history["close"].iloc[-1])
+
+    # 3. Get news sentiment today
+    today_sentiment = 0.0
+    sentiment_details = {"positive_ratio": 0.0, "negative_ratio": 0.0, "neutral_ratio": 1.0, "headline_count": 0}
+    try:
+        news_df = fetch_all_news(lookback_days=1)
+        if not news_df.empty:
+            sentiment_df = aggregate_daily_sentiment(news_df)
+            if not sentiment_df.empty:
+                today_sentiment = float(sentiment_df["sentiment_score"].iloc[-1])
+                sentiment_details = {
+                    "positive_ratio": float(sentiment_df["positive_ratio"].iloc[-1]),
+                    "negative_ratio": float(sentiment_df["negative_ratio"].iloc[-1]),
+                    "neutral_ratio": float(sentiment_df["neutral_ratio"].iloc[-1]),
+                    "headline_count": int(sentiment_df["headline_count"].iloc[-1])
+                }
+        else:
+            if os.path.exists("silver_daily_sentiment.csv"):
+                saved = pd.read_csv("silver_daily_sentiment.csv", index_col=0)
+                today_sentiment = float(saved["sentiment_score"].iloc[-1])
+                sentiment_details = {
+                    "positive_ratio": float(saved["positive_ratio"].iloc[-1]),
+                    "negative_ratio": float(saved["negative_ratio"].iloc[-1]),
+                    "neutral_ratio": float(saved["neutral_ratio"].iloc[-1]),
+                    "headline_count": int(saved["headline_count"].iloc[-1])
+                }
+    except Exception:
+        pass
+
+    # 4. Load PyTorch model
+    model, device = get_model_and_device(len(ts_cols))
+
+    # Pre-scale sentiment
+    scaler_sent = scalers["sent"]
+    scaled_sent = scaler_sent.transform([[today_sentiment]])[0][0]
+    sent_tensor = torch.tensor([[scaled_sent]], dtype=torch.float32).to(device)
+
+    # 5. Run auto-regressive multi-step forecast loop
+    predictions = []
+    current_history = recent_ts.copy().values
+    scaler_ts = scalers["ts"]
+    scaler_target = scalers["target"]
+
+    for step in range(horizon):
+        # Scale current window
+        scaled_ts = scaler_ts.transform(pd.DataFrame(current_history, columns=ts_cols))
+        ts_tensor = torch.tensor(scaled_ts, dtype=torch.float32).unsqueeze(0).to(device)
+
+        with torch.no_grad():
+            norm_pred = model(ts_tensor, sent_tensor).cpu().numpy()
+
+        pred_val = float(scaler_target.inverse_transform(norm_pred)[0][0])
+        predictions.append(pred_val)
+
+        # Update input array
+        next_row = current_history[-1].copy()
+        close_idx = ts_cols.index("close")
+        next_row[close_idx] = pred_val
+        current_history = np.vstack([current_history[1:], next_row])
+
+    # 6. Generate forecast date labels
+    hist_dates = [d.strftime("%Y-%m-%d") for d in cleaned_history.index[-30:]]
+    hist_prices = [float(p) for p in cleaned_history["close"].tail(30).values]
+
+    forecast_dates = []
+    last_date = cleaned_history.index[-1]
+    if hasattr(last_date, "date"):
+        current_date = last_date.date()
+    elif isinstance(last_date, str):
+        current_date = datetime.strptime(last_date, "%Y-%m-%d").date()
+    else:
+        current_date = last_date
+
+    for _ in range(horizon):
+        current_date += timedelta(days=1)
+        while current_date.weekday() >= 5: # Shift weekends to trading days
+            current_date += timedelta(days=1)
+        forecast_dates.append(current_date.strftime("%Y-%m-%d"))
+
+    # Convert prices
+    final_pred = predictions[-1]
+    pred_gram = final_pred / 31.103
+    pred_kg = pred_gram * 1000
+    pct_change = ((final_pred - latest_close) / latest_close) * 100
+
+    return {
+        "predicted_troy_oz": final_pred,
+        "predicted_gram": pred_gram,
+        "predicted_kg": pred_kg,
+        "latest_close": latest_close,
+        "pct_change": pct_change,
+        "sentiment_score": today_sentiment,
+        "sentiment_details": sentiment_details,
+        "historical_dates": hist_dates,
+        "historical_prices": hist_prices,
+        "forecast_dates": forecast_dates,
+        "forecast_prices": predictions
+    }
+
+
+# ---------------------------------------------------------------------------
+# APP ENDPOINTS
+# ---------------------------------------------------------------------------
+
+@app.route("/")
+def index():
+    return render_template("index.html")
+
+
+@app.route("/api/predict")
+def predict_endpoint():
+    try:
+        horizon = int(request.args.get("horizon", 1))
+        horizon = max(1, min(10, horizon))
+        forecast_results = calculate_multistep_forecast(horizon=horizon)
+        return jsonify(forecast_results)
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/chat/history", methods=["GET"])
+def chat_history_endpoint():
+    return jsonify(load_chat_history())
+
+
+@app.route("/api/chat", methods=["POST"])
+def chat_endpoint():
+    try:
+        data = request.get_json() or {}
+        user_message = data.get("message", "").strip()
+        if not user_message:
+            return jsonify({"error": "پرسیارەکە بەتاڵە"}), 400
+
+        openrouter_key = os.getenv("OPENROUTER_API_KEY")
+        tavily_key = os.getenv("TAVILY_API_KEY")
+
+        if not openrouter_key:
+            return jsonify({"error": "کلیلەکانی OpenRouter API لەسەر سێرڤەر دانەمەزراون."}), 500
+
+        # Load existing history
+        history = load_chat_history()
+
+        # 1. Search Tavily for news
+        search_results = ""
+        try:
+            tavily = TavilyClient(api_key=tavily_key)
+            query = "silver market news economic conditions Iraq Kurdistan Sulaymaniyah"
+            search_response = tavily.search(query=query, max_results=3)
+            search_results = "\n\n".join([
+                f"Title: {r['title']}\nSnippet: {r['content']}" 
+                for r in search_response.get('results', [])
+            ])
+        except Exception as te:
+            print(f"[WARN] Tavily search failed: {te}. Proceeding without search context.")
+            search_results = "No recent external search results available due to API access limits."
+
+        # 2. Get latest forecasting values for context
+        forecast = calculate_multistep_forecast(horizon=1)
+        model_telemetry = (
+            f"Silver Market Telemetry:\n"
+            f"- Today's Last Actual Close: ${forecast['latest_close']:.4f} / Troy Oz\n"
+            f"- Tomorrow's AI Predicted Price: ${forecast['predicted_troy_oz']:.4f} / Troy Oz\n"
+            f"- Tomorrow's Predicted Price (Kg): ${forecast['predicted_kg']:.2f}\n"
+            f"- Sentiment Score Indicator: {forecast['sentiment_score']:+.4f}"
+        )
+
+        # 3. Call OpenRouter using OpenAI client
+        client = OpenAI(
+            base_url="https://openrouter.ai/api/v1",
+            api_key=openrouter_key
+        )
+        system_prompt = (
+            "You are an expert Silver Market Advisor located in the Qaysari Bazaar of Sulaymaniyah, Kurdistan. "
+            "You MUST speak fluent Kurdish (Sorani). Analyze the data and advise the user. Be concise and professional."
+        )
+        user_payload = (
+            f"User Question: {user_message}\n\n"
+            f"{model_telemetry}\n\n"
+            f"Latest Economic & Silver News:\n{search_results}"
+        )
+
+        chat_completion = client.chat.completions.create(
+            extra_headers={
+                "HTTP-Referer": "http://localhost:5000",
+                "X-Title": "Silver AI Terminal",
+            },
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_payload}
+            ],
+            model="meta-llama/llama-3.1-70b-instruct",
+            temperature=0.3
+        )
+        response_text = chat_completion.choices[0].message.content
+
+        # Append to persisted chat history
+        history.append({"role": "user", "text": user_message})
+        history.append({"role": "advisor", "text": response_text})
+        save_chat_history(history)
+
+        return jsonify({"response": response_text})
+
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        return jsonify({"error": str(e)}), 500
+
+
+if __name__ == "__main__":
+    # Start Telegram monitor background thread (guarding against Flask debug double reloader)
+    if not app.debug or os.environ.get("WERKZEUG_RUN_MAIN") == "true":
+        tg_thread = threading.Thread(target=telegram_monitor_thread, daemon=True)
+        tg_thread.start()
+        
+    app.run(host="127.0.0.1", port=5000, debug=True)

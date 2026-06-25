@@ -1,0 +1,15 @@
+services:
+  - type: web
+    name: silver-ai-terminal
+    env: python
+    buildCommand: pip install -r requirements.txt
+    startCommand: gunicorn flask_app:app
+    envVars:
+      - key: OPENROUTER_API_KEY
+        sync: false
+      - key: TAVILY_API_KEY
+        sync: false
+      - key: TELEGRAM_BOT_TOKEN
+        sync: false
+      - key: TELEGRAM_CHAT_ID
+        sync: false

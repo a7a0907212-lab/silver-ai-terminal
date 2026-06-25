@@ -1,0 +1,14 @@
+torch
+flask
+openai
+tavily-python
+pandas
+yfinance
+scikit-learn
+matplotlib
+python-dotenv
+requests
+gunicorn
+waitress
+numpy
+scipy

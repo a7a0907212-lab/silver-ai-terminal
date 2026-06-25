@@ -1,0 +1,10 @@
+__pycache__/
+.env
+chat_history.json
+dist/
+build/
+*.spec
+*.pyc
+*.csv
+.tempmediaStorage/
+evaluation_chart.png
