@@ -649,7 +649,7 @@ def telegram_polling_thread():
 
         print("[TELEGRAM] Starting bot polling thread...")
         try:
-            bot.infinity_polling(timeout=20, long_polling_timeout=10)
+            bot.infinity_polling()
         except Exception as e:
             print(f"[TELEGRAM] Error in bot polling: {e}")
 
