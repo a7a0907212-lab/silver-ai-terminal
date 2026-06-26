@@ -137,7 +137,18 @@
         <section class="lg:col-span-3 flex flex-col gap-8">
             
             <!-- Metrics Cards -->
-            <div class="grid grid-cols-1 md:grid-cols-3 gap-6">
+            <div class="grid grid-cols-1 md:grid-cols-4 gap-6">
+                <!-- Simulated Balance Card -->
+                <div class="glass p-6 rounded-2xl flex flex-col gap-2 relative overflow-hidden border border-emerald-500/20">
+                    <div class="absolute top-0 right-0 w-24 h-24 bg-emerald-500/10 rounded-full blur-2xl"></div>
+                    <span class="text-xs font-semibold text-gray-400 uppercase tracking-wider">Trading Account Balance</span>
+                    <span class="text-3xl font-extrabold text-emerald-400 code-font">{{ balance }}</span>
+                    <div class="flex items-center gap-1.5 text-xs text-emerald-500/80 font-medium">
+                        <span>🟢 Demo Balance</span>
+                        <span class="text-gray-500 font-normal">| Simulated</span>
+                    </div>
+                </div>
+
                 <!-- Troy Ounce Card -->
                 <div class="glass p-6 rounded-2xl flex flex-col gap-2 relative overflow-hidden">
                     <div class="absolute top-0 right-0 w-24 h-24 bg-indigo-500/5 rounded-full blur-2xl"></div>

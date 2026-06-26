@@ -19,10 +19,22 @@ import pandas as pd
 import matplotlib.pyplot as plt
 from datetime import datetime
 
-import torch
-import torch.nn as nn
-import torch.optim as optim
-from torch.utils.data import Dataset, DataLoader
+try:
+    import torch
+    import torch.nn as nn
+    import torch.optim as optim
+    from torch.utils.data import Dataset, DataLoader
+    HAS_TORCH = True
+except ImportError:
+    HAS_TORCH = False
+    class Dataset:
+        def __init__(self, *args, **kwargs): pass
+    class nn:
+        class Module:
+            def __init__(self, *args, **kwargs): pass
+    class optim: pass
+    class DataLoader: pass
+
 from sklearn.preprocessing import StandardScaler, MinMaxScaler
 
 # Force UTF-8 output on Windows terminals

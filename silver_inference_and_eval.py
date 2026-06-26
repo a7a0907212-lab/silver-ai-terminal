@@ -20,8 +20,13 @@ import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
 
-import torch
-import torch.nn as nn
+try:
+    import torch
+    import torch.nn as nn
+    HAS_TORCH = True
+except ImportError:
+    HAS_TORCH = False
+
 
 # Import components from existing pipelines
 from silver_data_pipeline import fetch_historical_data, clean_and_engineer

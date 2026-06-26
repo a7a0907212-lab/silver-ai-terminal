@@ -26,8 +26,6 @@ import numpy as np
 import pandas as pd
 import feedparser
 import yfinance as yf
-import torch
-from transformers import AutoTokenizer, AutoModelForSequenceClassification
 
 
 # ---------------------------------------------------------------------------
@@ -54,7 +52,7 @@ RSS_QUERIES = [
 YFINANCE_TICKERS = ["SI=F", "GLD", "SLV", "GC=F"]
 
 # ---------------------------------------------------------------------------
-# MODULE 1 — MODEL LOADER
+# MODULE 1 — MODEL LOADER (MOCKED)
 # ---------------------------------------------------------------------------
 
 _tokenizer = None
@@ -63,32 +61,9 @@ _device    = None
 
 
 def load_finbert(model_name: str = FINBERT_MODEL):
-    """
-    Loads ProsusAI/finbert tokenizer + model once and caches them globally.
-    Uses GPU if available, otherwise CPU.
-
-    Returns
-    -------
-    (tokenizer, model, device)
-    """
-    global _tokenizer, _model, _device
-
-    if _model is not None:
-        return _tokenizer, _model, _device
-
-    print(f"\n[FinBERT] Loading model: {model_name}")
-    _device    = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    print(f"[FinBERT] Device: {_device}")
-
-    _tokenizer = AutoTokenizer.from_pretrained(model_name)
-    _model     = AutoModelForSequenceClassification.from_pretrained(model_name)
-    _model.to(_device)
-    _model.eval()
-
-    labels = list(_model.config.id2label.values())
-    print(f"[FinBERT] Labels: {labels}")
-    print(f"[FinBERT] Model ready.\n")
-    return _tokenizer, _model, _device
+    """Mock loading function to preserve interface compatibility."""
+    print("[Lightweight Sentiment] load_finbert called. Skipping loading FinBERT (zero-RAM mode).")
+    return None, None, None
 
 
 # ---------------------------------------------------------------------------
@@ -240,81 +215,84 @@ def fetch_all_news(lookback_days: int = NEWS_LOOKBACK_DAYS) -> pd.DataFrame:
 
 
 # ---------------------------------------------------------------------------
-# MODULE 3 — FINBERT INFERENCE
+# MODULE 3 — LIGHTWEIGHT SENTIMENT INFERENCE (ZERO RAM)
 # ---------------------------------------------------------------------------
 
-def _truncate_text(text: str, tokenizer, max_len: int = MAX_TOKEN_LEN) -> str:
-    """Hard-truncates text to FinBERT's 512-token limit before encoding."""
-    tokens = tokenizer.tokenize(text)
-    if len(tokens) > max_len - 2:          # -2 for [CLS] and [SEP]
-        tokens = tokens[:max_len - 2]
-    return tokenizer.convert_tokens_to_string(tokens)
+POSITIVE_WORDS = {
+    'up', 'gain', 'rise', 'rising', 'gained', 'gaining', 'gains', 'rises',
+    'bullish', 'rally', 'rallied', 'growth', 'grow', 'growing', 'high', 'higher',
+    'highest', 'increase', 'increased', 'increasing', 'positive', 'positively',
+    'surge', 'surged', 'soar', 'soared', 'soaring', 'strengthen', 'strengthened',
+    'strengthening', 'beat', 'beaten', 'beats', 'support', 'supported', 'supporting',
+    'profit', 'profitable', 'profits', 'advance', 'advanced', 'advancing', 'peak',
+    'outperform', 'outperformed', 'boost', 'boosted', 'boosting', 'optimism', 'optimistic',
+    'recovery', 'recover', 'recovered', 'rebounding', 'rebound', 'jump', 'jumped',
+    'demand', 'strong', 'stronger', 'bright', 'stimulus'
+}
+
+NEGATIVE_WORDS = {
+    'down', 'drop', 'dropped', 'dropping', 'drops', 'fall', 'fell', 'falling',
+    'falls', 'bearish', 'loss', 'losses', 'lost', 'decline', 'declined', 'declining',
+    'declines', 'low', 'lower', 'lowest', 'decrease', 'decreased', 'decreasing',
+    'negative', 'negatively', 'slump', 'slumped', 'slumping', 'plummet', 'plummeted',
+    'plummeting', 'weaken', 'weakened', 'weakening', 'miss', 'missed', 'missing',
+    'resistance', 'deficit', 'retreat', 'retreated', 'plunge', 'plunged', 'plunging',
+    'underperform', 'underperformed', 'drag', 'dragged', 'drags', 'fear', 'fears',
+    'worry', 'worries', 'concern', 'concerns', 'slow', 'slowing', 'slowdown', 'weak',
+    'weaker', 'drop-off', 'inflationary', 'recession', 'panic', 'selloff'
+}
+
+def analyze_sentiment_text(text: str) -> dict:
+    """
+    Analyzes sentiment of a headline using a financial keyword dictionary.
+    Returns: {"label": str, "score_discrete": float, "score_weighted": float,
+              "prob_positive": float, "prob_negative": float}
+    """
+    words = re.findall(r'\b\w+\b', text.lower())
+    
+    pos_count = sum(1 for w in words if w in POSITIVE_WORDS)
+    neg_count = sum(1 for w in words if w in NEGATIVE_WORDS)
+    
+    total = pos_count + neg_count
+    
+    if total > 0:
+        score_weighted = (pos_count - neg_count) / total
+        prob_positive = pos_count / (total + 2.0)
+        prob_negative = neg_count / (total + 2.0)
+    else:
+        score_weighted = 0.0
+        prob_positive = 0.0
+        prob_negative = 0.0
+        
+    if score_weighted > 0.05:
+        best_label = "positive"
+        numeric = 1.0
+    elif score_weighted < -0.05:
+        best_label = "negative"
+        numeric = -1.0
+    else:
+        best_label = "neutral"
+        numeric = 0.0
+        
+    return {
+        "label": best_label,
+        "score_discrete": numeric,
+        "score_weighted": round(score_weighted, 6),
+        "prob_positive": round(prob_positive, 6),
+        "prob_negative": round(prob_negative, 6)
+    }
 
 
 def score_headlines(
     headlines: list[str],
-    tokenizer,
-    model,
-    device,
-    batch_size: int = BATCH_SIZE,
+    *args,
+    **kwargs
 ) -> list[dict]:
     """
-    Runs FinBERT over a list of headline strings in batches.
-
-    Parameters
-    ----------
-    headlines : list[str]  — Raw headline texts
-    tokenizer : HF tokenizer
-    model     : HF model (FinBERT)
-    device    : torch.device
-
-    Returns
-    -------
-    list of dicts: [{"label": str, "score": float, "numeric": float}]
+    Runs lightweight sentiment over a list of headline strings.
+    Accepts arbitrary arguments for backwards compatibility.
     """
-    results = []
-    label_map = {v.lower(): k for k, v in model.config.id2label.items()}
-
-    for i in range(0, len(headlines), batch_size):
-        batch = headlines[i: i + batch_size]
-        batch = [_truncate_text(h, tokenizer) for h in batch]
-
-        encodings = tokenizer(
-            batch,
-            padding=True,
-            truncation=True,
-            max_length=MAX_TOKEN_LEN,
-            return_tensors="pt",
-        )
-        encodings = {k: v.to(device) for k, v in encodings.items()}
-
-        with torch.no_grad():
-            logits = model(**encodings).logits
-            probs  = torch.softmax(logits, dim=-1).cpu().numpy()
-
-        id2label = {int(k): v.lower() for k, v in model.config.id2label.items()}
-
-        for prob_row in probs:
-            best_idx   = int(prob_row.argmax())
-            best_label = id2label[best_idx]
-            numeric    = SCORE_MAP.get(best_label, 0.0)
-
-            # Weighted score: positive_prob - negative_prob (richer signal)
-            pos_idx = next((k for k, v in id2label.items() if v == "positive"), None)
-            neg_idx = next((k for k, v in id2label.items() if v == "negative"), None)
-            weighted = 0.0
-            if pos_idx is not None and neg_idx is not None:
-                weighted = float(prob_row[pos_idx]) - float(prob_row[neg_idx])
-
-            results.append({
-                "label"         : best_label,
-                "score_discrete": numeric,
-                "score_weighted": round(weighted, 6),
-                "prob_positive" : round(float(prob_row[pos_idx]) if pos_idx is not None else 0.0, 6),
-                "prob_negative" : round(float(prob_row[neg_idx]) if neg_idx is not None else 0.0, 6),
-            })
-
-    return results
+    return [analyze_sentiment_text(h) for h in headlines]
 
 
 # ---------------------------------------------------------------------------
@@ -323,7 +301,7 @@ def score_headlines(
 
 def aggregate_daily_sentiment(news_df: pd.DataFrame) -> pd.DataFrame:
     """
-    Applies FinBERT to all fetched headlines and aggregates results by
+    Applies lightweight sentiment to all fetched headlines and aggregates results by
     calendar date into a single sentiment score per day.
 
     Aggregation method
@@ -344,12 +322,10 @@ def aggregate_daily_sentiment(news_df: pd.DataFrame) -> pd.DataFrame:
         print("[WARN] No headlines to score. Returning empty DataFrame.")
         return pd.DataFrame()
 
-    tokenizer, model, device = load_finbert()
-
     headlines = news_df["headline"].tolist()
-    print(f"\n[FinBERT] Scoring {len(headlines)} headlines...")
-    scored = score_headlines(headlines, tokenizer, model, device)
-    print(f"[FinBERT] Inference complete.")
+    print(f"\n[Lightweight Sentiment] Scoring {len(headlines)} headlines...")
+    scored = score_headlines(headlines)
+    print(f"[Lightweight Sentiment] Inference complete.")
 
     # Attach scores back to news_df
     score_df = pd.DataFrame(scored)
@@ -381,10 +357,12 @@ def aggregate_daily_sentiment(news_df: pd.DataFrame) -> pd.DataFrame:
     agg.sort_index(inplace=True)
 
     print(f"\n  [Aggregation] Daily sentiment rows: {len(agg)}")
-    print(f"  [Aggregation] Date range: {agg.index[0].date()} -> {agg.index[-1].date()}")
-    print(f"  [Aggregation] Overall mean score: {agg['sentiment_score'].mean():.4f}\n")
+    if len(agg) > 0:
+        print(f"  [Aggregation] Date range: {agg.index[0].date()} -> {agg.index[-1].date()}")
+        print(f"  [Aggregation] Overall mean score: {agg['sentiment_score'].mean():.4f}\n")
 
     return agg
+
 
 
 # ---------------------------------------------------------------------------

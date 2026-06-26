@@ -1,4 +1,3 @@
-torch
 flask
 openai
 tavily-python
@@ -13,4 +12,5 @@ waitress
 numpy
 scipy
 feedparser
-transformers
+pytelegrambotapi
+textblob

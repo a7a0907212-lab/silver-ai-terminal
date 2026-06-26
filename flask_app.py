@@ -23,9 +23,16 @@ import numpy as np
 import pandas as pd
 from dotenv import load_dotenv
 from flask import Flask, jsonify, render_template, request
+import telebot
 
-import torch
-import torch.nn as nn
+# Try importing torch/PyTorch model
+try:
+    import torch
+    import torch.nn as nn
+    from pytorch_multimodal_model import SilverPredictor
+    HAS_TORCH = True
+except ImportError:
+    HAS_TORCH = False
 
 # Force UTF-8 stdout
 if hasattr(sys.stdout, "reconfigure"):
@@ -46,7 +53,7 @@ app.json.ensure_ascii = False
 # Import model structures and pipelining
 from silver_data_pipeline import fetch_historical_data, clean_and_engineer
 from news_sentiment_pipeline import fetch_all_news, aggregate_daily_sentiment
-from pytorch_multimodal_model import SilverPredictor
+
 
 
 # ---------------------------------------------------------------------------
@@ -59,9 +66,10 @@ CHAT_HISTORY_FILE = "chat_history.json"
 
 _cached_model = None
 _cached_device = None
-
 def get_model_and_device(ts_input_dim):
     global _cached_model, _cached_device
+    if not HAS_TORCH:
+        return None, None
     if _cached_model is None:
         _cached_device = "cuda" if torch.cuda.is_available() else "cpu"
         model = SilverPredictor(
@@ -79,7 +87,6 @@ def get_model_and_device(ts_input_dim):
         model.eval()
         _cached_model = model
     return _cached_model, _cached_device
-
 
 # ---------------------------------------------------------------------------
 # CHAT PERSISTENCE HELPERS
@@ -170,20 +177,12 @@ def telegram_monitor_thread():
 # ---------------------------------------------------------------------------
 # FORECAST ROUTINES
 # ---------------------------------------------------------------------------
-
 def calculate_multistep_forecast(horizon=1, seq_len=20):
     """
-    Fetches live data, runs multi-step auto-regressive prediction, 
-    and packages data into standard serializable structures.
+    Fetches live data, runs multi-step prediction (either using PyTorch model or
+    falling back to a lightweight trend+sentiment estimator), and packages data.
     """
-    if not os.path.exists(SCALERS_PATH) or not os.path.exists(MODEL_PATH):
-        raise FileNotFoundError("Model or scaler resources are missing.")
-
-    # 1. Load Scalers
-    with open(SCALERS_PATH, "rb") as f:
-        scalers = pickle.load(f)
-
-    # 2. Fetch recent daily market data
+    # 1. Fetch recent daily market data
     today_str = date.today().strftime("%Y-%m-%d")
     raw_history = fetch_historical_data(start="2026-02-01", end=today_str)
     cleaned_history = clean_and_engineer(raw_history)
@@ -198,7 +197,7 @@ def calculate_multistep_forecast(horizon=1, seq_len=20):
     recent_ts = cleaned_history[ts_cols].tail(seq_len)
     latest_close = float(cleaned_history["close"].iloc[-1])
 
-    # 3. Get news sentiment today
+    # 2. Get news sentiment today
     today_sentiment = 0.0
     sentiment_details = {"positive_ratio": 0.0, "negative_ratio": 0.0, "neutral_ratio": 1.0, "headline_count": 0}
     try:
@@ -226,36 +225,63 @@ def calculate_multistep_forecast(horizon=1, seq_len=20):
     except Exception:
         pass
 
-    # 4. Load PyTorch model
-    model, device = get_model_and_device(len(ts_cols))
-
-    # Pre-scale sentiment
-    scaler_sent = scalers["sent"]
-    scaled_sent = scaler_sent.transform([[today_sentiment]])[0][0]
-    sent_tensor = torch.tensor([[scaled_sent]], dtype=torch.float32).to(device)
-
-    # 5. Run auto-regressive multi-step forecast loop
     predictions = []
-    current_history = recent_ts.copy().values
-    scaler_ts = scalers["ts"]
-    scaler_target = scalers["target"]
+    
+    # 3. Model Prediction or Fallback
+    if HAS_TORCH and os.path.exists(SCALERS_PATH) and os.path.exists(MODEL_PATH):
+        try:
+            with open(SCALERS_PATH, "rb") as f:
+                scalers = pickle.load(f)
+            model, device = get_model_and_device(len(ts_cols))
+            
+            # Pre-scale sentiment
+            scaler_sent = scalers["sent"]
+            scaled_sent = scaler_sent.transform([[today_sentiment]])[0][0]
+            sent_tensor = torch.tensor([[scaled_sent]], dtype=torch.float32).to(device)
 
-    for step in range(horizon):
-        # Scale current window
-        scaled_ts = scaler_ts.transform(pd.DataFrame(current_history, columns=ts_cols))
-        ts_tensor = torch.tensor(scaled_ts, dtype=torch.float32).unsqueeze(0).to(device)
+            current_history = recent_ts.copy().values
+            scaler_ts = scalers["ts"]
+            scaler_target = scalers["target"]
 
-        with torch.no_grad():
-            norm_pred = model(ts_tensor, sent_tensor).cpu().numpy()
+            for step in range(horizon):
+                # Scale current window
+                scaled_ts = scaler_ts.transform(pd.DataFrame(current_history, columns=ts_cols))
+                ts_tensor = torch.tensor(scaled_ts, dtype=torch.float32).unsqueeze(0).to(device)
 
-        pred_val = float(scaler_target.inverse_transform(norm_pred)[0][0])
-        predictions.append(pred_val)
+                with torch.no_grad():
+                    norm_pred = model(ts_tensor, sent_tensor).cpu().numpy()
 
-        # Update input array
-        next_row = current_history[-1].copy()
-        close_idx = ts_cols.index("close")
-        next_row[close_idx] = pred_val
-        current_history = np.vstack([current_history[1:], next_row])
+                pred_val = float(scaler_target.inverse_transform(norm_pred)[0][0])
+                predictions.append(pred_val)
+
+                # Update input array
+                next_row = current_history[-1].copy()
+                close_idx = ts_cols.index("close")
+                next_row[close_idx] = pred_val
+                current_history = np.vstack([current_history[1:], next_row])
+        except Exception as e:
+            print(f"[FORECAST] Error in PyTorch forecasting: {e}. Falling back to trend model.")
+            predictions = []
+            
+    if not predictions:
+        # Fallback: simple trend and sentiment forecasting using numpy/pandas
+        current_close = latest_close
+        
+        # Calculate recent average daily return over last 5 trading days
+        if len(cleaned_history) >= 5:
+            recent_closes = cleaned_history["close"].tail(5).values
+            pct_changes = (recent_closes[1:] - recent_closes[:-1]) / recent_closes[:-1]
+            trend = float(np.mean(pct_changes))
+        else:
+            trend = 0.0001
+            
+        trend = max(-0.01, min(0.01, trend))  # Cap trend to ±1% per day
+        
+        for step in range(horizon):
+            change_pct = trend + 0.002 * today_sentiment
+            pred_val = current_close * (1.0 + change_pct)
+            predictions.append(pred_val)
+            current_close = pred_val
 
     # 6. Generate forecast date labels
     hist_dates = [d.strftime("%Y-%m-%d") for d in cleaned_history.index[-30:]]
@@ -303,7 +329,7 @@ def calculate_multistep_forecast(horizon=1, seq_len=20):
 
 @app.route("/")
 def index():
-    return render_template("index.html")
+    return render_template("index.html", balance="$100,000.00")
 
 
 @app.route("/api/predict")
@@ -407,10 +433,156 @@ def chat_endpoint():
         return jsonify({"error": str(e)}), 500
 
 
-if __name__ == "__main__":
-    # Start Telegram monitor background thread (guarding against Flask debug double reloader)
-    if not app.debug or os.environ.get("WERKZEUG_RUN_MAIN") == "true":
-        tg_thread = threading.Thread(target=telegram_monitor_thread, daemon=True)
-        tg_thread.start()
+# ---------------------------------------------------------------------------
+# TELEGRAM BOT COMMAND HANDLERS & POLLING
+# ---------------------------------------------------------------------------
+
+bot = None
+bot_token = os.getenv("TELEGRAM_BOT_TOKEN")
+
+if bot_token and "YOUR_TELEGRAM" not in bot_token:
+    try:
+        bot = telebot.TeleBot(bot_token)
+    except Exception as e:
+        print(f"[TELEGRAM] Error initializing TeleBot: {e}")
+
+if bot:
+    @bot.message_handler(commands=['start', 'help'])
+    def send_welcome(message):
+        welcome_msg = (
+            "👋 بەخێربێیت بۆ بۆتی فەرمی بازاڕی زیوی سلێمانی!\n\n"
+            "من ڕاوێژکاری زیرەکی تۆم بۆ پێشبینیکردن و شیکردنەوەی بازاڕی زیو.\n\n"
+            "📌 فەرمانەکان:\n"
+            "/predict - پێشبینی نرخی زیو بۆ سبەی\n"
+            "/help - نیشاندانی ئەم نامەیە\n\n"
+            "هەروەها دەتوانیت هەر پرسیارێکی ترت هەیە بە کوردی لێم بپرسیت!"
+        )
+        bot.reply_to(message, welcome_msg)
+
+    @bot.message_handler(commands=['predict'])
+    def send_prediction(message):
+        try:
+            forecast = calculate_multistep_forecast(horizon=1)
+            latest_close = forecast["latest_close"]
+            predicted_troy_oz = forecast["predicted_troy_oz"]
+            pct_change = forecast["pct_change"]
+            sentiment = forecast["sentiment_score"]
+            
+            direction = "📈 بەرزبوونەوە" if pct_change >= 0 else "📉 دابەزین"
+            color_emoji = "🟢" if pct_change >= 0 else "🔴"
+            
+            msg = (
+                f"🔮 *پێشبینی بازاڕی زیو بۆ سبەی:*\n\n"
+                f"📊 *نرخی ئێستا:* ${latest_close:.4f} / Troy Oz\n"
+                f"🔮 *نرخی پێشبینیکراو:* ${predicted_troy_oz:.4f} / Troy Oz\n"
+                f"📈 *ڕێژەی گۆڕانکاری:* {color_emoji} {pct_change:+.2f}%\n"
+                f"💭 *هەستی بازاڕ:* {sentiment:+.4f}\n"
+            )
+            bot.reply_to(message, msg, parse_mode="Markdown")
+        except Exception as e:
+            bot.reply_to(message, f"❌ ببورە، کێشەیەک لە پێشبینیکردندا ڕوویدا: {str(e)}")
+
+    @bot.message_handler(func=lambda message: True)
+    def handle_kurdish_chat(message):
+        user_message = message.text.strip()
+        if not user_message:
+            return
+            
+        openrouter_key = os.getenv("OPENROUTER_API_KEY")
+        tavily_key = os.getenv("TAVILY_API_KEY")
         
+        if not openrouter_key:
+            bot.reply_to(message, "❌ ببورە، کلیلەکانی API لەسەر سێرڤەر دانەمەزراون.")
+            return
+
+        try:
+            bot.send_chat_action(message.chat.id, 'typing')
+            
+            search_results = ""
+            try:
+                tavily = TavilyClient(api_key=tavily_key)
+                query = f"silver market news {user_message}"
+                search_response = tavily.search(query=query, max_results=2)
+                search_results = "\n\n".join([
+                    f"Title: {r['title']}\nSnippet: {r['content']}" 
+                    for r in search_response.get('results', [])
+                ])
+            except Exception as te:
+                print(f"[WARN] Tavily search failed in Telegram: {te}")
+                search_results = "No recent external search results available."
+
+            forecast = calculate_multistep_forecast(horizon=1)
+            model_telemetry = (
+                f"Silver Market Telemetry:\n"
+                f"- Today's Last Actual Close: ${forecast['latest_close']:.4f} / Troy Oz\n"
+                f"- Tomorrow's AI Predicted Price: ${forecast['predicted_troy_oz']:.4f} / Troy Oz\n"
+                f"- Sentiment Score: {forecast['sentiment_score']:+.4f}"
+            )
+
+            client = OpenAI(
+                base_url="https://openrouter.ai/api/v1",
+                api_key=openrouter_key
+            )
+            system_prompt = (
+                "You are an expert Silver Market Advisor located in the Qaysari Bazaar of Sulaymaniyah, Kurdistan. "
+                "You MUST speak fluent Kurdish (Sorani). Analyze the data and reply to the user. Keep it concise, friendly, and under 150 words."
+            )
+            user_payload = (
+                f"User Question: {user_message}\n\n"
+                f"{model_telemetry}\n\n"
+                f"Latest News:\n{search_results}"
+            )
+
+            chat_completion = client.chat.completions.create(
+                extra_headers={
+                    "HTTP-Referer": "http://localhost:5000",
+                    "X-Title": "Silver AI Telegram Bot",
+                },
+                messages=[
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": user_payload}
+                ],
+                model="meta-llama/llama-3.1-70b-instruct",
+                temperature=0.3
+            )
+            response_text = chat_completion.choices[0].message.content
+            bot.reply_to(message, response_text)
+        except Exception as e:
+            bot.reply_to(message, f"❌ ببورە، هەڵەیەک ڕوویدا لە وەڵامدانەوەدا: {str(e)}")
+
+def telegram_polling_thread():
+    """
+    Background worker thread that runs the Telegram bot polling.
+    """
+    if bot:
+        print("[TELEGRAM] Starting bot polling thread...")
+        try:
+            bot.infinity_polling(non_stop=True, timeout=20, long_polling_timeout=10)
+        except Exception as e:
+            print(f"[TELEGRAM] Error in bot polling: {e}")
+
+def start_telegram_threads():
+    """
+    Starts background threads for daily alerts and polling, ensuring they only run once.
+    """
+    global _threads_started
+    if '_threads_started' not in globals():
+        globals()['_threads_started'] = True
+        
+        # Start Daily alerts thread
+        t1 = threading.Thread(target=telegram_monitor_thread, daemon=True)
+        t1.start()
+        
+        # Start Live polling thread
+        if bot:
+            t2 = threading.Thread(target=telegram_polling_thread, daemon=True)
+            t2.start()
+
+# Automatically trigger the background threads when module is loaded (e.g. by Gunicorn)
+if not app.debug or os.environ.get("WERKZEUG_RUN_MAIN") == "true":
+    start_telegram_threads()
+
+
+if __name__ == "__main__":
     app.run(host="127.0.0.1", port=5000, debug=True)
+

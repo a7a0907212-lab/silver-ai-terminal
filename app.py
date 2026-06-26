@@ -19,7 +19,12 @@ import pandas as pd
 import plotly.graph_objects as go
 import streamlit as st
 
-import torch
+try:
+    import torch
+    HAS_TORCH = True
+except ImportError:
+    HAS_TORCH = False
+
 
 # Force UTF-8 output
 if hasattr(sys.stdout, "reconfigure"):
