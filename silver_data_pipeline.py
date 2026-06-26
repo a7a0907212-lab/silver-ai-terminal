@@ -83,10 +83,12 @@ def fetch_historical_data(
             progress=True,
             multi_level_index=False  # Flat column names instead of MultiIndex
         )
-        if raw_df.empty:
-            raise ValueError(f"No data returned for ticker '{ticker}'")
     except Exception as e:
-        print(f"\n  [WARN] yfinance fetch failed: {e}. Generating synthetic fallback data...")
+        print(f"\n  [WARN] yfinance download raised exception: {e}")
+        raw_df = pd.DataFrame()
+
+    if raw_df is None or raw_df.empty:
+        print(f"\n  [WARN] yfinance returned empty DataFrame. Generating synthetic fallback data...")
         from datetime import timedelta
         # Parse dates
         try:
@@ -367,26 +369,28 @@ def fetch_live_price(
     print(f"  MODULE 4 - Live Silver Price (Real-Time)")
     print(f"{'─'*62}")
 
+    price = None
+    currency = "USD"
     try:
-        ticker_obj = yf.Ticker(ticker)
-        # Try fast_info first, then fall back to info dict
-        try:
-            price = ticker_obj.fast_info["last_price"]
-            currency = getattr(ticker_obj.fast_info, "currency", "USD")
-        except Exception:
-            info = ticker_obj.info
-            price    = info.get("regularMarketPrice") or info.get("previousClose")
-            currency = info.get("currency", "USD")
-
-        if price is None or price == 0:
-            raise ValueError("No valid price returned from yfinance fast_info/info.")
+        # Download latest 1 day of data to fetch live price
+        df = yf.download(ticker, period="1d", progress=False)
     except Exception as e:
-        print(f"\n  [WARN] Live price fetch failed: {e}. Generating synthetic fallback price...")
-        # Generate a realistic live price hovering around 31.00 USD
+        print(f"\n  [WARN] yfinance live download raised exception: {e}")
+        df = pd.DataFrame()
+
+    if df is None or df.empty:
+        print(f"\n  [WARN] Live price fetch returned empty DataFrame. Generating synthetic fallback price...")
         import time
         np.random.seed(int(time.time()) % 1000)
         price = round(31.00 + np.random.uniform(-0.5, 0.5), 4)
-        currency = "USD"
+    else:
+        if "Close" in df.columns and len(df) > 0:
+            price = float(df["Close"].iloc[-1])
+        else:
+            print(f"\n  [WARN] Live price Close column missing or empty. Generating synthetic fallback price...")
+            import time
+            np.random.seed(int(time.time()) % 1000)
+            price = round(31.00 + np.random.uniform(-0.5, 0.5), 4)
 
     price_per_gram = price / troy_oz_to_gram
     price_per_kg   = price_per_gram * 1000

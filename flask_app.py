@@ -208,7 +208,7 @@ def telegram_monitor_thread():
 # ---------------------------------------------------------------------------
 # FORECAST ROUTINES
 # ---------------------------------------------------------------------------
-def calculate_multistep_forecast(horizon=1, seq_len=20):
+def calculate_multistep_forecast(horizon=100, seq_len=20):
     """
     Fetches live data, runs multi-step prediction (either using PyTorch model or
     falling back to a lightweight trend+sentiment estimator), and packages data.
@@ -308,7 +308,8 @@ def calculate_multistep_forecast(horizon=1, seq_len=20):
             
         trend = max(-0.01, min(0.01, trend))  # Cap trend to ±1% per day
         
-        for step in range(horizon):
+        # Enforce exactly 100-day future projection path
+        for step in range(100):
             change_pct = trend + 0.002 * today_sentiment
             pred_val = current_close * (1.0 + change_pct)
             predictions.append(pred_val)
@@ -327,7 +328,7 @@ def calculate_multistep_forecast(horizon=1, seq_len=20):
     else:
         current_date = last_date
 
-    for _ in range(horizon):
+    for _ in range(len(predictions)):
         current_date += timedelta(days=1)
         while current_date.weekday() >= 5: # Shift weekends to trading days
             current_date += timedelta(days=1)
@@ -338,6 +339,18 @@ def calculate_multistep_forecast(horizon=1, seq_len=20):
     pred_gram = final_pred / 31.103
     pred_kg = pred_gram * 1000
     pct_change = ((final_pred - latest_close) / latest_close) * 100
+
+    # Generate rationale
+    if pct_change > 0:
+        if today_sentiment > 0.05:
+            rationale = f"The algorithm projects an upward trend of {pct_change:.1f}% over the next 100 days driven by bullish momentum and positive news sentiment (score: {today_sentiment:.2f})."
+        else:
+            rationale = f"The algorithm projects a moderate growth of {pct_change:.1f}% over the next 100 days, primarily supported by steady historical price trends."
+    else:
+        if today_sentiment < -0.05:
+            rationale = f"The algorithm projects a downward trend of {pct_change:.1f}% over the next 100 days driven by bearish momentum and negative news sentiment (score: {today_sentiment:.2f})."
+        else:
+            rationale = f"The algorithm projects a slight decline of {pct_change:.1f}% over the next 100 days, reflecting recent consolidations in the historical trend."
 
     return {
         "predicted_troy_oz": final_pred,
@@ -350,7 +363,8 @@ def calculate_multistep_forecast(horizon=1, seq_len=20):
         "historical_dates": hist_dates,
         "historical_prices": hist_prices,
         "forecast_dates": forecast_dates,
-        "forecast_prices": predictions
+        "forecast_prices": predictions,
+        "rationale": rationale
     }
 
 
@@ -418,8 +432,8 @@ def trade_endpoint():
 @app.route("/api/predict")
 def predict_endpoint():
     try:
-        horizon = int(request.args.get("horizon", 1))
-        horizon = max(1, min(10, horizon))
+        horizon = int(request.args.get("horizon", 100))
+        horizon = max(1, min(100, horizon))
         forecast_results = calculate_multistep_forecast(horizon=horizon)
         return jsonify(forecast_results)
     except Exception as e:

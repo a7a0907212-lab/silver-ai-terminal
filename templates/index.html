@@ -81,8 +81,8 @@
                 <div class="flex flex-col gap-2">
                     <label for="horizon-slider" class="text-sm text-gray-400">Forecast Horizon (Days)</label>
                     <div class="flex items-center gap-4">
-                        <input id="horizon-slider" type="range" min="1" max="10" value="1" class="flex-1 h-1.5 bg-gray-700 rounded-lg appearance-none cursor-pointer accent-indigo-500">
-                        <span id="horizon-val" class="px-3 py-1 bg-gray-800 border border-gray-700 rounded-lg font-bold text-indigo-400 code-font">1</span>
+                        <input id="horizon-slider" type="range" min="1" max="100" value="100" class="flex-1 h-1.5 bg-gray-700 rounded-lg appearance-none cursor-pointer accent-indigo-500">
+                        <span id="horizon-val" class="px-3 py-1 bg-gray-800 border border-gray-700 rounded-lg font-bold text-indigo-400 code-font">100</span>
                     </div>
                     <p class="text-xs text-gray-500 mt-1">Multi-step prediction path auto-regressively rolled forward.</p>
                 </div>
@@ -215,6 +215,10 @@
                     </div>
                     <div class="flex-1 min-h-[350px] relative">
                         <canvas id="forecastChart"></canvas>
+                    </div>
+                    <div class="mt-4 p-4 rounded-xl bg-gray-900/50 border border-gray-800/80">
+                        <h3 class="text-xs font-bold text-indigo-400 uppercase tracking-wider mb-1">AI Market Rationale</h3>
+                        <p id="market-rationale" class="text-sm text-gray-300 font-light leading-relaxed">Analyzing market trends and news sentiment...</p>
                     </div>
                 </div>
 
@@ -457,6 +461,9 @@
 
             // Last Update
             document.getElementById('last-update').textContent = `Last Update: ${new Date().toLocaleTimeString()}`;
+
+            // Market Rationale
+            document.getElementById('market-rationale').textContent = data.rationale || "No rationale available.";
         }
 
         function updateChart(data) {
@@ -505,10 +512,10 @@
                         {
                             label: 'AI Forecast Path',
                             data: forecastSeries,
-                            borderColor: '#ef4444',
+                            borderColor: '#10b981',
                             borderWidth: 2,
                             borderDash: [5, 5],
-                            pointBackgroundColor: '#dc2626',
+                            pointBackgroundColor: '#10b981',
                             pointRadius: (context) => {
                                 const index = context.dataIndex;
                                 return index === labels.length - 1 ? 8 : 3;
@@ -593,7 +600,7 @@
 
         // Init load
         document.addEventListener('DOMContentLoaded', () => {
-            fetchPredictions(1);
+            fetchPredictions(100);
             fetchChatHistory();
         });
     </script>
