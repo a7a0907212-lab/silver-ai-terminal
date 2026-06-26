@@ -12,3 +12,4 @@ gunicorn
 waitress
 numpy
 scipy
+feedparser
