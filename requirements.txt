@@ -13,3 +13,4 @@ waitress
 numpy
 scipy
 feedparser
+transformers
