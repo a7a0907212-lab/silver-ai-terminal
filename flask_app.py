@@ -63,6 +63,7 @@ from news_sentiment_pipeline import fetch_all_news, aggregate_daily_sentiment
 MODEL_PATH = "silver_multimodal_predictor.pth"
 SCALERS_PATH = "silver_scalers.pkl"
 CHAT_HISTORY_FILE = "chat_history.json"
+PORTFOLIO_FILE = "portfolio.json"
 
 _cached_model = None
 _cached_device = None
@@ -101,12 +102,42 @@ def load_chat_history():
             print(f"[CHAT] Error loading chat history: {e}")
     return []
 
+
 def save_chat_history(history):
     try:
         with open(CHAT_HISTORY_FILE, "w", encoding="utf-8") as f:
             json.dump(history, f, ensure_ascii=False, indent=4)
     except Exception as e:
         print(f"[CHAT] Error saving chat history: {e}")
+
+
+# ---------------------------------------------------------------------------
+# PAPER TRADING PORTFOLIO HELPERS
+# ---------------------------------------------------------------------------
+
+def load_portfolio():
+    if not os.path.exists(PORTFOLIO_FILE):
+        initial = {"cash_balance": 100000.00, "silver_oz_owned": 0.0}
+        save_portfolio(initial)
+        return initial
+    try:
+        with open(PORTFOLIO_FILE, "r", encoding="utf-8") as f:
+            data = json.load(f)
+            if "cash_balance" not in data:
+                data["cash_balance"] = 100000.00
+            if "silver_oz_owned" not in data:
+                data["silver_oz_owned"] = 0.0
+            return data
+    except Exception as e:
+        print(f"[PORTFOLIO] Error loading portfolio: {e}")
+        return {"cash_balance": 100000.00, "silver_oz_owned": 0.0}
+
+def save_portfolio(portfolio):
+    try:
+        with open(PORTFOLIO_FILE, "w", encoding="utf-8") as f:
+            json.dump(portfolio, f, ensure_ascii=False, indent=4)
+    except Exception as e:
+        print(f"[PORTFOLIO] Error saving portfolio: {e}")
 
 
 # ---------------------------------------------------------------------------
@@ -326,12 +357,64 @@ def calculate_multistep_forecast(horizon=1, seq_len=20):
 # ---------------------------------------------------------------------------
 # APP ENDPOINTS
 # ---------------------------------------------------------------------------
-
 @app.route("/")
 def index():
-    return render_template("index.html", balance="$100,000.00")
+    portfolio = load_portfolio()
+    return render_template("index.html", portfolio=portfolio)
 
 
+@app.route("/api/portfolio", methods=["GET"])
+def portfolio_endpoint():
+    return jsonify(load_portfolio())
+
+
+@app.route("/api/trade", methods=["POST"])
+def trade_endpoint():
+    try:
+        data = request.get_json() or {}
+        action = data.get("action", "").lower()
+        
+        try:
+            amount_oz = float(data.get("amount_oz", 0))
+        except (ValueError, TypeError):
+            return jsonify({"error": "بڕی دیاریکراو دەبێت ژمارە بێت"}), 400
+            
+        if action not in ["buy", "sell"]:
+            return jsonify({"error": "کرداری نادیار (کڕین یان فرۆشتن)"}), 400
+        if amount_oz <= 0:
+            return jsonify({"error": "بڕی زیو دەبێت لە 0 زیاتر بێت"}), 400
+            
+        # Get live Silver price
+        forecast = calculate_multistep_forecast(horizon=1)
+        current_price = float(forecast["latest_close"])
+        
+        portfolio = load_portfolio()
+        cash = portfolio["cash_balance"]
+        holdings = portfolio["silver_oz_owned"]
+        
+        total_cost = current_price * amount_oz
+        
+        if action == "buy":
+            if total_cost > cash:
+                return jsonify({"error": f"کاشی پێویستت نییە. تێچووی گشتی: ${total_cost:.2f}، بەڵام کاشی بەردەستت: ${cash:.2f}"}), 400
+            portfolio["cash_balance"] = round(cash - total_cost, 2)
+            portfolio["silver_oz_owned"] = round(holdings + amount_oz, 4)
+            msg = f"کڕینی {amount_oz:.4f} ئۆنس زیو بە سەرکەوتوویی ئەنجامدرا بە نرخی ${current_price:.4f} بۆ هەر ئۆنسێک."
+        else: # sell
+            if amount_oz > holdings:
+                return jsonify({"error": f"بڕی زیوی پێویستت نییە بۆ فرۆشتن. بڕی بەردەست: {holdings:.4f} Oz"}), 400
+            portfolio["cash_balance"] = round(cash + total_cost, 2)
+            portfolio["silver_oz_owned"] = round(holdings - amount_oz, 4)
+            msg = f"فرۆشتنی {amount_oz:.4f} ئۆنس زیو بە سەرکەوتوویی ئەنجامدرا بە نرخی ${current_price:.4f} بۆ هەر ئۆنسێک."
+            
+        save_portfolio(portfolio)
+        return jsonify({
+            "message": msg,
+            "cash_balance": portfolio["cash_balance"],
+            "silver_oz_owned": portfolio["silver_oz_owned"]
+        })
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
 @app.route("/api/predict")
 def predict_endpoint():
     try:
@@ -550,16 +633,26 @@ if bot:
         except Exception as e:
             bot.reply_to(message, f"❌ ببورە، هەڵەیەک ڕوویدا لە وەڵامدانەوەدا: {str(e)}")
 
+
 def telegram_polling_thread():
     """
     Background worker thread that runs the Telegram bot polling.
     """
     if bot:
+        print("[TELEGRAM] Checking Bot authentication...")
+        try:
+            bot.get_me()
+            print("[TELEGRAM] Bot authentication successful.")
+        except Exception as e:
+            print(f"[TELEGRAM] Bot unauthorized or offline, disabling polling: {e}")
+            return
+
         print("[TELEGRAM] Starting bot polling thread...")
         try:
-            bot.infinity_polling(non_stop=True, timeout=20, long_polling_timeout=10)
+            bot.infinity_polling(timeout=20, long_polling_timeout=10)
         except Exception as e:
             print(f"[TELEGRAM] Error in bot polling: {e}")
+
 
 def start_telegram_threads():
     """

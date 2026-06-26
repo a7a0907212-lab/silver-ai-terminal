@@ -43,13 +43,13 @@
         }
     </style>
 </head>
-<body class="min-h-screen flex flex-col">
+<body class="min-h-screen flex flex-col bg-[#0b0f19] text-gray-100 font-sans antialiased selection:bg-indigo-500/30 selection:text-indigo-200">
     <!-- Navbar -->
     <header class="w-full py-5 px-8 glass border-b border-gray-800 flex justify-between items-center">
         <div class="flex items-center gap-3">
             <span class="text-3xl">🪙</span>
             <div>
-                <h1 class="text-xl font-extrabold tracking-tight text-white">SILVER AI TRADING TERMINAL</h1>
+                <h1 class="text-xl font-extrabold tracking-tight text-white animate-fade-in">SILVER AI TRADING TERMINAL</h1>
                 <p class="text-xs text-gray-400">Multi-modal Deep Learning Forecast & Kurdish AI Advisor</p>
             </div>
         </div>
@@ -74,7 +74,7 @@
     <main class="flex-1 p-8 max-w-[1700px] w-full mx-auto grid grid-cols-1 lg:grid-cols-4 gap-8">
         
         <!-- Left Sidebar (Controls & Sentiment) -->
-        <section class="lg:col-span-1 flex flex-col gap-6">
+        <section class="lg:col-span-1 flex flex-col gap-6 animate-slide-in">
             <!-- Forecast Settings -->
             <div class="glass p-6 rounded-2xl flex flex-col gap-4">
                 <h2 class="text-md font-bold text-gray-300 uppercase tracking-wider">Forecast Settings</h2>
@@ -123,11 +123,35 @@
                 </div>
             </div>
 
+            <!-- Paper Trading Panel -->
+            <div class="glass p-6 rounded-2xl flex flex-col gap-4 border border-indigo-500/25">
+                <h2 class="text-md font-bold text-white uppercase tracking-wider flex items-center gap-2">
+                    <span>💼</span> Paper Trading
+                </h2>
+                
+                <div class="flex flex-col gap-3">
+                    <div>
+                        <label for="trade-amount" class="text-xs text-gray-400">Trade Amount (Troy Ounces)</label>
+                        <input id="trade-amount" type="number" min="0.01" step="0.01" value="10.00" class="w-full mt-1 px-3 py-2 bg-gray-800 border border-gray-700 rounded-lg text-white font-bold code-font focus:outline-none focus:border-indigo-500">
+                    </div>
+                    
+                    <div class="grid grid-cols-2 gap-3 mt-1">
+                        <button id="buy-btn" class="py-2.5 bg-emerald-600 hover:bg-emerald-500 active:bg-emerald-700 transition rounded-lg text-sm font-bold text-white shadow-lg shadow-emerald-900/20">
+                            Buy Silver
+                        </button>
+                        <button id="sell-btn" class="py-2.5 bg-rose-600 hover:bg-rose-500 active:bg-rose-700 transition rounded-lg text-sm font-bold text-white shadow-lg shadow-rose-900/20">
+                            Sell Silver
+                        </button>
+                    </div>
+                </div>
+                <div id="trade-message" class="text-xs font-semibold text-center hidden"></div>
+            </div>
+
             <!-- Pipeline Parameters -->
             <div class="glass p-6 rounded-2xl text-xs text-gray-400 flex flex-col gap-2">
                 <h3 class="font-bold text-gray-300 mb-1 uppercase tracking-wider">Model Meta</h3>
                 <div>Branch 1: <span class="text-white code-font">LSTM (30 Technical Ind.)</span></div>
-                <div>Branch 2: <span class="text-white code-font">Linear (FinBERT News)</span></div>
+                <div>Branch 2: <span class="text-white code-font">Linear (Lexicon News)</span></div>
                 <div>Sequence Window: <span class="text-white code-font">20 Trading Days</span></div>
                 <div>Loss Function: <span class="text-white code-font">Huber Loss (Robust)</span></div>
             </div>
@@ -138,19 +162,30 @@
             
             <!-- Metrics Cards -->
             <div class="grid grid-cols-1 md:grid-cols-4 gap-6">
-                <!-- Simulated Balance Card -->
+                <!-- Cash Balance Card -->
                 <div class="glass p-6 rounded-2xl flex flex-col gap-2 relative overflow-hidden border border-emerald-500/20">
                     <div class="absolute top-0 right-0 w-24 h-24 bg-emerald-500/10 rounded-full blur-2xl"></div>
                     <span class="text-xs font-semibold text-gray-400 uppercase tracking-wider">Trading Account Balance</span>
-                    <span class="text-3xl font-extrabold text-emerald-400 code-font">{{ balance }}</span>
+                    <span id="cash-balance" class="text-3xl font-extrabold text-emerald-400 code-font">${{ "%.2f"|format(portfolio.cash_balance) }}</span>
                     <div class="flex items-center gap-1.5 text-xs text-emerald-500/80 font-medium">
                         <span>🟢 Demo Balance</span>
                         <span class="text-gray-500 font-normal">| Simulated</span>
                     </div>
                 </div>
 
+                <!-- Silver Owned Card -->
+                <div class="glass p-6 rounded-2xl flex flex-col gap-2 relative overflow-hidden border border-amber-500/20">
+                    <div class="absolute top-0 right-0 w-24 h-24 bg-amber-500/10 rounded-full blur-2xl"></div>
+                    <span class="text-xs font-semibold text-gray-400 uppercase tracking-wider">Silver Owned</span>
+                    <span id="silver-owned" class="text-3xl font-extrabold text-amber-400 code-font">{{ "%.4f"|format(portfolio.silver_oz_owned) }} Oz</span>
+                    <div class="flex items-center gap-1.5 text-xs text-amber-500/80 font-medium">
+                        <span>🪙 Holdings</span>
+                        <span class="text-gray-500 font-normal">| Paper Trade</span>
+                    </div>
+                </div>
+
                 <!-- Troy Ounce Card -->
-                <div class="glass p-6 rounded-2xl flex flex-col gap-2 relative overflow-hidden">
+                <div class="glass p-6 rounded-2xl flex flex-col gap-2 relative overflow-hidden border border-indigo-500/20">
                     <div class="absolute top-0 right-0 w-24 h-24 bg-indigo-500/5 rounded-full blur-2xl"></div>
                     <span class="text-xs font-semibold text-gray-400 uppercase tracking-wider">Per Troy Ounce</span>
                     <span id="price-ounce" class="text-3xl font-extrabold text-white code-font">$0.0000</span>
@@ -161,16 +196,8 @@
                     </div>
                 </div>
 
-                <!-- Gram Card -->
-                <div class="glass p-6 rounded-2xl flex flex-col gap-2 relative overflow-hidden">
-                    <div class="absolute top-0 right-0 w-24 h-24 bg-indigo-500/5 rounded-full blur-2xl"></div>
-                    <span class="text-xs font-semibold text-gray-400 uppercase tracking-wider">Per Gram (31.103g/Oz)</span>
-                    <span id="price-gram" class="text-3xl font-extrabold text-white code-font">$0.000000</span>
-                    <span class="text-xs text-gray-500">1 Troy Oz = 31.103 Grams</span>
-                </div>
-
                 <!-- Kilogram Card -->
-                <div class="glass p-6 rounded-2xl flex flex-col gap-2 relative overflow-hidden">
+                <div class="glass p-6 rounded-2xl flex flex-col gap-2 relative overflow-hidden border border-indigo-500/20">
                     <div class="absolute top-0 right-0 w-24 h-24 bg-indigo-500/5 rounded-full blur-2xl"></div>
                     <span class="text-xs font-semibold text-gray-400 uppercase tracking-wider">Per Kilogram (1000g)</span>
                     <span id="price-kg" class="text-3xl font-extrabold text-white code-font">$0.0000</span>
@@ -232,6 +259,52 @@
         const chatForm = document.getElementById('chat-form');
         const chatInput = document.getElementById('chat-input');
         const chatBox = document.getElementById('chat-box');
+
+        // Paper Trading DOM Elements & Handlers
+        const buyBtn = document.getElementById('buy-btn');
+        const sellBtn = document.getElementById('sell-btn');
+        const tradeAmountInput = document.getElementById('trade-amount');
+        const tradeMessage = document.getElementById('trade-message');
+
+        async function executeTrade(action) {
+            const amount = parseFloat(tradeAmountInput.value);
+            if (isNaN(amount) || amount <= 0) {
+                showTradeMessage('تکایە بڕێکی دروست بنووسە', 'text-rose-400');
+                return;
+            }
+
+            try {
+                const response = await fetch('/api/trade', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ action: action, amount_oz: amount })
+                });
+                const data = await response.json();
+
+                if (response.ok) {
+                    showTradeMessage(data.message, 'text-emerald-400');
+                    document.getElementById('cash-balance').textContent = `$${data.cash_balance.toFixed(2)}`;
+                    document.getElementById('silver-owned').textContent = `${data.silver_oz_owned.toFixed(4)} Oz`;
+                } else {
+                    showTradeMessage(data.error || 'هەڵەیەک ڕوویدا', 'text-rose-400');
+                }
+            } catch (err) {
+                console.error(err);
+                showTradeMessage('پەیوەندی لەگەڵ سێرڤەر نییە', 'text-rose-400');
+            }
+        }
+
+        function showTradeMessage(text, className) {
+            tradeMessage.textContent = text;
+            tradeMessage.className = `text-xs font-semibold text-center mt-2 ${className}`;
+            tradeMessage.classList.remove('hidden');
+            setTimeout(() => {
+                tradeMessage.classList.add('hidden');
+            }, 6000);
+        }
+
+        if (buyBtn) buyBtn.addEventListener('click', () => executeTrade('buy'));
+        if (sellBtn) sellBtn.addEventListener('click', () => executeTrade('sell'));
 
         let chart = null;
 

@@ -104,7 +104,9 @@ def fetch_rss_news(lookback_days: int = NEWS_LOOKBACK_DAYS) -> pd.DataFrame:
     for query in RSS_QUERIES:
         url = f"https://news.google.com/rss/search?q={query}&hl=en-US&gl=US&ceid=US:en"
         try:
-            feed = feedparser.parse(url)
+            import requests
+            resp = requests.get(url, timeout=5)
+            feed = feedparser.parse(resp.content)
             for entry in feed.entries:
                 title = getattr(entry, "title", "").strip()
                 if not title:
